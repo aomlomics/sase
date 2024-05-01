@@ -8,8 +8,8 @@ Original code location: https://data.mendeley.com/datasets/y3dgh36zt9/3
 
 Design file name | File type | Open source license
 -----------------|-----------|--------------------
-SASeV3c.ino Arduino code | CC BY 4.0
-SASeBoard15.zip Gerber Files | CC BY 4.0
+SASeV3c.ino | Arduino code | CC BY 4.0
+SASeBoard15.zip | Gerber Files | CC BY 4.0
 SASe3DPrintFiles.zip | 3Dprint Files | CC BY 4.0
 SASeVectorFiles.zip | Vector Files  | CC BY 4.0
 BillofMaterials.docx | MS Word Doc | CC BY 4.0
