@@ -1,0 +1,24 @@
+{
+    "Header": {
+        "Comment": "All values are metric (mm)",
+        "CreationDate": "2020-10-15T14:51:57Z",
+        "GenerationSoftware": {
+            "Application": "EAGLE",
+            "Vendor": "Autodesk",
+            "Version": "9.2.2"
+        },
+        "Part": "Single"
+    },
+    "Overall": {
+        "BoardThickness": 1.57,
+        "LayerNumber": 2,
+        "Name": {
+            "ProjectId": "sasEBoardRebootNF2"
+        },
+        "Owner": "Nathan Formel <nathan.formel@noaa.gov>",
+        "Size": {
+            "X": 64.197663,
+            "Y": 64.197663
+        }
+    }
+}
