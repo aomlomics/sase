@@ -1,28 +1,36 @@
+#include <Adafruit_NeoPixel.h>
+
 //Libraries needed are:
 // 1. Adafruit SSD1306, in Teensy folder if Teensy has been installed on computer. Note: the h file needs to be commented and uncommented to select the correct oled screen resolution 128 x 64
 // 2. Adafruit GFX Library (in local documents folder)
 // 3. SdFat (in local documents folder)
-// Update note: Due to changes to ADC.h library the code must be ammended for three instances in the Setup. Where: adc->setAveraging(32, ADC_0) change to: adc->adc0->setAveraging(32) (and make similar changes to next two instances).
+// Update note: Due to changes to ADC.h library the code must be ammended for multiple instances in the Setup. Where: adc->setAveraging(32, ADC_0) change to: adc->adc0->setAveraging(32) (and make similar changes to next two instances), also adc-> becomes adc->adc0->.
 // Changed syringe volume to 7mL to accomodate disparity in pump rates. With new tubing should be reset to 6mL
 // Changed Run Water and Run Syringe commands in Prime menu to turn on and off with enter button rather than limiting to 10 sec
- 
-char saseVersion [] = "V3c"; //V3c Updated menu for separate calibration and priming commands for pumps, and changed volume limitation to 2000mL and volume increments from 5mL to 10mL
-//LIBRARIES
+// Encoder values made absolute on lines 566 & 574 to avoid issue with motors not stopping (e.g. syringe pump running forever)
+char saseVersion [] = "V3d"; //V3d Updated code for use on Teensy 4.1, comments below
+
+//LIBRARIES/Users/fas/Desktop/AOML/SASe/code_/libraries_/Encoder.h
   #include <TimeLib.h>//Time library
   #include <Wire.h>// I2C library
-  #include <Snooze.h>// Sleep library for Teensy
+  #include <Snooze.h>// Low power sleep library for Teensy, Needed to edit two files related to snooze, SnoozeDigital.cpp and hal.c, follow guidance on https://github.com/duff2013/Snooze/issues/108 and https://github.com/duff2013/Snooze/issues/114 to fix
+  //Previously we've used Hibernate function from the snooze library for sub mA current draw in sleep mode. With the new Teensy 4s and a unmaintained library it isn't working anymore. Sleep function does work.
+  //It's not as low current draw but it will still allow for short-term deployments (maybe days, need to check current draw)
   #include <Adafruit_GFX.h>// OLED graphics library
   #include <Adafruit_SSD1306.h>// OLED library
-  #include <IRremote.h>// IR library
-  #include "SdFat.h"//SD cart library
+  #include <IRremote.h>// Needed to enable line 51 in IRremote.hpp (#define SUPPRESS_ERROR_MESSAGE_FOR_BEGIN, files on my mac in /Users/.../Library/Arduino15/packages/teensy/hardware/avr/1.58.1/libraries/IRremote/src), also needed to change some variables, mainly "irrecv" to "IRreceiver" (see for guidance: https://github.com/Arduino-IRremote/Arduino-IRremote?tab=readme-ov-file#converting-your-2x-program-to-the-4x-version)
+  //Uncomment line 174 and open serial monitor while pressing remote buttons to see what codes each IR button is generating. Need to make sure code IDs are used in IR definitions
+  #include <SdFat.h>//sd cart library needed to make some updates to variables, but all done in code here
+  #include <SD.h>//sd library
   #include <SPI.h>// Serial library
   #include <ADC.h>// Analog to digital converter library
+  #include <ADC_util.h> //Added in following ADC examples
   #include <Encoder.h>
 //DEFINITIONS
   //Snooze
     SnoozeAlarm alarm;
     SnoozeDigital digital;
-    SnoozeBlock config_teensy35(digital, alarm);
+    SnoozeBlock config_teensy40(digital, alarm);
     int hrToSleep;// Number of hours to sleep
     int minToSleep;// Number of remaining minutes to sleep
     int secToSleep;// Number of remaining seconds to sleep
@@ -37,13 +45,26 @@ char saseVersion [] = "V3c"; //V3c Updated menu for separate calibration and pri
     float rawVoltage = 0;// The raw voltage read across the voltage divider
   //IR
     int irPowerPin = 20;// Pin that powers the IR sensor
-    IRrecv irrecv(21);// Creates an IR receiving object irrecv and sets the pin that receives the IR signal
-    decode_results results;// Creates a variable of type decode_results
-    #define LEFTIR 16584943// IR signal read by sensor that translates to LEFTIR
-    #define RIGHTIR 16601263// IR signal read by sensor that translates to RIGHTIR
-    #define UPIR 16621663// IR signal read by sensor that translates to UPIR
-    #define DOWNIR 16625743// IR signal read by sensor that translates to DOWNIR
-    #define ENTERIR 16617583// IR signal read by sensor that translates to ENTERIR
+    #define IR_RECEIVE_PIN 21
+    //Original code
+    // #define LEFTIR 16584943// IR signal read by sensor that translates to LEFTIR
+    // #define RIGHTIR 16601263// IR signal read by sensor that translates to RIGHTIR
+    // #define UPIR 16621663// IR signal read by sensor that translates to UPIR
+    // #define DOWNIR 16625743// IR signal read by sensor that translates to DOWNIR
+    // #define ENTERIR 16617583// IR signal read by sensor that translates to ENTERIR
+    //NEED TO UPDATE THE IR HEX NUMBERS (BELOW) TO PROPERLY BE READ BY REMOTE. Uncomment line 172 for further troubleshooting in serial monitor
+    //Normal Remote Below
+     #define LEFTIR 0xF708BF00      // IR signal read by sensor that translates to LEFTIR
+     #define RIGHTIR 0xF50ABF00     // IR signal read by sensor that translates to RIGHTIR
+     #define UPIR 0xFA05BF00        // IR signal read by sensor that translates to UPIR
+     #define DOWNIR 0xF20DBF00      // IR signal read by sensor that translates to DOWNIR
+     #define ENTERIR 0xF609BF00     // IR signal read by sensor that translates to ENTERIR 
+    //Convenient Remote Below
+   // #define LEFTIR 3910598400// IR signal read by sensor that translates to LEFTIR
+   // #define RIGHTIR 4061003520// IR signal read by sensor that translates to RIGHTIR
+   // #define UPIR 3927310080// IR signal read by sensor that translates to UPIR
+   // #define DOWNIR 3877175040// IR signal read by sensor that translates to DOWNIR
+   // #define ENTERIR 3860463360// IR signal read by sensor that translates to ENTERIR
   //Reed switch
     int REED_INTERRUPT_PIN = 22;// Pin that reed switch is attached to
   //Pumps
@@ -73,13 +94,14 @@ char saseVersion [] = "V3c"; //V3c Updated menu for separate calibration and pri
   // Menu
     uint8_t menu = 0;// An index value to establish which navigation menu is currently selected
     uint8_t pos = 0;// An index value to establish which navigation position (within a menu) is currently selected
-  //SD card
-    SdFatSdio sd;
-    File sampleParam;// Name of sample parameter file saved on SD card
-    File dataLog;// Name of data logging file saved on SD card
+  //sd card
+    #define SD_CONFIG SdioConfig(FIFO_SDIO)
+    FsFile sampleParam;// Name of sample parameter file saved on sd card
+    FsFile dataLog;// Name of data logging file saved on sd card
     #define SAMPLE_PARAM_ROW 1// Number of rows in sampleParam.txt file
     #define SAMPLE_PARAM_COL 9// Number of columns in sampleParam.txt file
     int sampleParamArray[SAMPLE_PARAM_ROW][SAMPLE_PARAM_COL];// Create an sampleParamArray with SAMPLE_PARAM_ROW rows and SAMPLE_PARAM_COL columns
+  
   //RTC
     time_t nowSecTime;// Create a time variable called nowSecTime, representing the time now in seconds since 1970
     time_t updateSecTime;// Create a time variable called updateSecTime, representing the time to be set to the RTC in seconds since 1970
@@ -92,20 +114,21 @@ char saseVersion [] = "V3c"; //V3c Updated menu for separate calibration and pri
   //Sample Parameters. For sampleMode 0 is daily, 1 is once
     int sampleMode;// An integer to hold what sampling mode is initiated, 0 for daily, 1 for once
     long sampleVolume = 5.0;// An integer for the number of mL of sample that will be collected
-    long syringeDispenseVolume = 8.0; //Volume of preservative pumped from syringe
+    long syringeDispenseVolume = 7.0; //Volume of preservative pumped from syringe
 
 //<-------------------------------------------------------------------------------------------------------------------------------------------------------------->
 //<----------------------------------------------------------------------SETUP----------------------------------------------------------------------------------->
 //<-------------------------------------------------------------------------------------------------------------------------------------------------------------->
 void setup(){// Run setup code on initial power up
   //Communication setup     
-    Wire.begin();// NOT SURE THIS IS NECESSARY
+    //Wire.begin();// NOT SURE THIS IS NECESSARY
     Serial.begin(9600);// Initiate the serial connection, used for debugging
     delay (500);// Pause for a half second
   //Voltage read setup
     pinMode(voltageReadPin, INPUT);// Set the voltage read pin as an input, where we will be reading the voltage of the battery pack
     adc->adc0->setAveraging(32); // set number of averages read in the analog to digital converter we will use to read the voltage of the battery pack
     adc->adc0->setResolution(16); // set bits of resolution of the analaog to digital converter we will use to read the voltage of the battery pack
+    adc->adc0->setConversionSpeed(ADC_CONVERSION_SPEED::VERY_LOW_SPEED); // change the conversion speed, added this command in to follow example guidance
     adc->adc0->setSamplingSpeed(ADC_SAMPLING_SPEED::LOW_SPEED); // set the sampling speed of the analaog to digital converter to low
   //RTC setup          
     setSyncProvider(getTeensy3Time);// Sets the time using the getTeensy3Time function
@@ -114,6 +137,7 @@ void setup(){// Run setup code on initial power up
     delay(200);
     digital.pinMode(REED_INTERRUPT_PIN, INPUT_PULLUP, RISING);// Sets the pin the reed switch is connected to as an interrupt pin that can wake the teensy up from sleep
     alarm.setRtcTimer(0, 1, 0);// Set the alarm to go off at hour, min, sec
+
   //OLED Setup
     pinMode(oledPowerPin, OUTPUT);// Set the oledPowerPin to an output because this is the pin that we power the OLED from
     digitalWrite(oledPowerPin, HIGH);// Set the oledPowerPin to high to turn on the OLED
@@ -122,7 +146,7 @@ void setup(){// Run setup code on initial power up
   //Infrared Setup
     pinMode(irPowerPin, OUTPUT);// Set the irPowerPin to an output because this is the pin that we power the IR sensor from
     digitalWrite(irPowerPin, HIGH);// Set the irPowerPin to high to turn on the IR sensor   
-    irrecv.enableIRIn();// Starts the IR receiving object irrecv
+    IrReceiver.begin(IR_RECEIVE_PIN, DISABLE_LED_FEEDBACK);// Starts the IR receiving object irrecv
   //Pump Setup
     pinMode(pumpAPin, OUTPUT);// Set the pumpAPin to an output because this is the pin that we will use to power pump A
     pinMode(pumpAEncPowerPin, OUTPUT);
@@ -131,10 +155,12 @@ void setup(){// Run setup code on initial power up
     pumpAEnc.write(0);
     syringeEnc.write(0);
     
-    
-  //SD Setup
-    if (!sd.begin()) { display.setTextColor(WHITE,BLACK);  display.setTextSize(1);  display.setCursor(2,8);  display.println("MicroSD not");display.setCursor(5,16);  display.println("detected!");display.display();sd.initErrorHalt("SdFatSdio begin() failed");}// If the SD card fails to communicate, display that the card is not detected to the serial debugging
-    readSampleParamArray();// Call the function that reads the sample parameters off of the SD card
+  //sd Setup
+    bool ok;
+    ok = SD.sdfs.begin(SdioConfig(FIFO_SDIO));
+    if (!ok) { display.setTextColor(WHITE,BLACK);  display.setTextSize(1);  display.setCursor(2,8);  display.println("Microsd not");display.setCursor(5,16);  display.println("detected!");display.display();}// If the sd card fails to communicate, display that the card is not detected to the serial debugging
+    readSampleParamArray();// Call the function that reads the sample parameters off of the sd card
+    Serial.println(sampleVolume);
     calculateInitialAlarmSecondTime();    
 }
 
@@ -158,200 +184,202 @@ void loop(){
 //<---------------------------------------------------------------MENU NAVIGATION-------------------------------------------------------------------------------->
 //<-------------------------------------------------------------------------------------------------------------------------------------------------------------->
 void statusMenuNavigation(){
-  if(irrecv.decode(&results)){// If there is an IR signal, return true and store signal in "results"
+  if(IrReceiver.decode()){// If there is an IR signal, return true and store signal in "results"
+//Please use IrReceiver.decode() without a parameter and IrReceiver.decodedIRData.<fieldname> . [-Wdeprecated-declarations]
+    //Serial.println(IrReceiver.decodedIRData.decodedRawData); //Uncomment this line to see what codes each IR button is generating to adjust code IDs in IR definitions
     switch(pos){// What is the selected position within this menu?
      case 0:// Position is 0
-      switch (results.value){// What was the signal received from the IR remote?
+      switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
         case LEFTIR: menu = 6; break; case RIGHTIR: menu = 1; break;
       };break;
     }  
-    irrecv.resume();// Continue receiving looking for IR signals
+    IrReceiver.resume();// Continue receiving looking for IR signals
   }
 }
 
 void settingsMenuNavigation(){
-  if(irrecv.decode(&results)){// If there is an IR signal, return true and store signal in "results"
+  if(IrReceiver.decode()){// If there is an IR signal, return true and store signal in "results"
     switch(pos){// What is the selected position within this menu?
       case 0:// Position is 0
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: menu = 0; break; case RIGHTIR: menu = 2; break; case UPIR: pos = 0; break; case DOWNIR: pos = 1; break;// Navigate           
         };break;
       case 1:// Position is 1
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 0; break; case RIGHTIR: pos = 11; break; case UPIR: pos = 0; break; case DOWNIR: pos = 2; break;// Navigate            
         };break;
       case 11:// Position is 11
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 1; break; case RIGHTIR: pos = 2; break; case UPIR: sampleMode++; break; case DOWNIR: sampleMode--; break;// Navigate or change sample mode  
         }break;
       case 2:// Position is 2
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 11; break; case RIGHTIR: pos = 21; break; case UPIR: pos = 1; break; case DOWNIR: pos = 3; break;// Navigate 
         }break;
       case 21:// Position is 21
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 2; break; case RIGHTIR: pos = 3; break; case UPIR: sampleVolume=sampleVolume+sampleVolumeChangeMl; break; case DOWNIR: sampleVolume=sampleVolume-sampleVolumeChangeMl; break;// Navigate or change sample volume by sampleVolumeChangeMl in mL
         }break;
       case 3:
-        switch (results.value){// What was the signal received from the IR remote?
-          case LEFTIR: pos = 21; break; case RIGHTIR: pos = 3; break; case UPIR: pos = 2; break; case DOWNIR: pos = 3; break; case ENTERIR: writeSampleParamArray(); break;// Navigate or write sample parameters to the SD card     
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
+          case LEFTIR: pos = 21; break; case RIGHTIR: pos = 3; break; case UPIR: pos = 2; break; case DOWNIR: pos = 3; break; case ENTERIR: writeSampleParamArray(); break;// Navigate or write sample parameters to the sd card     
         }break;
     }  
-    irrecv.resume();// Continue receiving looking for IR signals
+    IrReceiver.resume();// Continue receiving looking for IR signals
   }
 }
 
 void pumpAMenuNavigation(){
-  if(irrecv.decode(&results)){// If there is an IR signal, return true and store signal in "results"
+  if(IrReceiver.decode()){// If there is an IR signal, return true and store signal in "results"
     switch(pos){// What is the selected position within this menu?
       case 0:// Position is 0
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: menu = 1; break; case RIGHTIR: menu = 3; break; case UPIR: pos = 0; break; case DOWNIR: pos = 1; break;// Navigate    
         }break;
       case 1:// Position is 1
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 0; break; case RIGHTIR: pos = 11; break; case UPIR: pos = 0; break; case DOWNIR: pos = 2; break;// Navigate  
         }break;
       case 11:// Position is 11
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 1; break; case RIGHTIR: pos = 12; break; case UPIR: aHr++; break; case DOWNIR: aHr--; break;// Navigate or change hour Pump A fires  
         }break;
       case 12:// Position is 12
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 11; break; case RIGHTIR: pos = 2; break; case UPIR: aMin++; break; case DOWNIR: aMin--; break;// Navigate or change minute Pump A fires   
         }break;
       case 2:// Position is 2
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 12; break; case RIGHTIR: pos = 21; break; case UPIR: pos = 1; break; case DOWNIR: pos = 3; break;// Navigate
         }break;
       case 21:// Position is 21
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 2; break; case RIGHTIR: pos = 22; break; case UPIR: aDay++; break; case DOWNIR: aDay--; break;// Navigate or change day Pump A fires   
         }break;
       case 22:// Position is 22
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 21; break; case RIGHTIR: pos = 23; break; case UPIR: aMon++; break; case DOWNIR: aMon--; break;// Navigate or change month Pump A fires   
         }break;
       case 23:// Position is 23
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 22; break; case RIGHTIR: pos = 3; break; case UPIR: aYr++; break; case DOWNIR: aYr--; break;// Navigate or change year Pump A fires  
         }break;
       case 3:// Position is 3
-        switch (results.value){// What was the signal received from the IR remote?
-          case LEFTIR: pos = 23; break; case RIGHTIR: pos = 3; break; case UPIR: pos = 2; break; case DOWNIR: pos = 3; break; case ENTERIR: writeSampleParamArray(); calculateInitialAlarmSecondTime(); break;// Navigate or save sample parameters to the SD card
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
+          case LEFTIR: pos = 23; break; case RIGHTIR: pos = 3; break; case UPIR: pos = 2; break; case DOWNIR: pos = 3; break; case ENTERIR: writeSampleParamArray(); calculateInitialAlarmSecondTime(); break;// Navigate or save sample parameters to the sd card
         }break;
     }  
-    irrecv.resume();// Continue receiving looking for IR signals
+    IrReceiver.resume();// Continue receiving looking for IR signals
   }
 }
 
 
 void initiateMenuNavigation(){
-  if(irrecv.decode(&results)){// If there is an IR signal, return true and store signal in "results"
+  if(IrReceiver.decode()){// If there is an IR signal, return true and store signal in "results"
     switch(pos){// What is the selected position within this menu?
       case 0:// Position is 0
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: menu = 2; break; case RIGHTIR: menu = 4; break; case DOWNIR: pos = 1; break;//Navigate   
         };break;
       case 1:// Position is 1
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 1; break; case RIGHTIR: pos = 1; break; case UPIR: pos = 0; break; case DOWNIR: pos = 1; break; case ENTERIR: initialAlarmFlag(); menu = 7; break;  //check the alarms then start sleeping then calculates the amount of time to sleep
         }break;
     }  
-    irrecv.resume();// Continue receiving looking for IR signals
+    IrReceiver.resume();// Continue receiving looking for IR signals
   }
 }
 void timeSetMenuNavigation(){
-  if(irrecv.decode(&results)){// If there is an IR signal, return true and store signal in "results"
+  if(IrReceiver.decode()){// If there is an IR signal, return true and store signal in "results"
     switch(pos){// What is the selected position within this menu?
       case 0:// Position is 0
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: menu = 3; break; case RIGHTIR: menu = 5; break; case UPIR: pos = 0; break; case DOWNIR: pos = 1; break;// Navigate  
         }break;
       case 1:// Position is 1
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 0; break; case RIGHTIR: pos = 11; break; case UPIR: pos = 0; break; case DOWNIR: pos = 2; break;// Navigate  
         }break;
       case 11:// Position is 11
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 1; break; case RIGHTIR: pos = 12; break; case UPIR: nowHr++; break; case DOWNIR: nowHr--; break;// Navigate or set the hour it is now
         }break;
       case 12:// Position is 12
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 11; break; case RIGHTIR: pos = 13; break; case UPIR: nowMin++; break; case DOWNIR: nowMin--; break;// Navigate or set the minute it is now  
         }break;
       case 13:// Position is 13
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 12; break; case RIGHTIR: pos = 2; break; case UPIR: nowSec++; break; case DOWNIR: nowSec--; break;// Navigate or set the second it is now    
         }break;
       case 2:// Position is 2
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 13; break; case RIGHTIR: pos = 21; break; case UPIR: pos = 1; break; case DOWNIR: pos = 3; break;// Navigate  
         }break;
       case 21:// Position is 21
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 2; break; case RIGHTIR: pos = 22; break; case UPIR: nowDay++; break; case DOWNIR: nowDay--; break;// Navigate or set the day it is now    
         }break;
       case 22:// Position is 22
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 21; break; case RIGHTIR: pos = 23; break; case UPIR: nowMon++; break; case DOWNIR: nowMon--; break;// Navigate or set the month it is now    
         }break;
       case 23:// Position is 23
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 22; break; case RIGHTIR: pos = 3; break; case UPIR: nowYr++; break; case DOWNIR: nowYr--; break;// Navigate or set the year it is now    
         }break;
       case 3:// Position is 3
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 23; break; case RIGHTIR: pos = 3; break; case UPIR: pos = 2; break; case DOWNIR: pos = 3; break; case ENTERIR: calcUpdateSecTime(); Teensy3Clock.set(updateSecTime); display.clearDisplay(); display.setTextSize(2); display.setTextColor(WHITE,BLACK); display.setCursor(0,0); display.println(" <SAVED>"); display.display(); delay(1000); break;//Navigate or 1. calculate the updated time in secons, set the clock to that second time, display "<SAVED>"     
         }break;
     }  
-    irrecv.resume();// Continue receiving looking for IR signals
+    IrReceiver.resume();// Continue receiving looking for IR signals
   }
 }
 void calibrationMenuNavigation(){
-  if(irrecv.decode(&results)){// If there is an IR signal, return true and store signal in "results"
+  if(IrReceiver.decode()){// If there is an IR signal, return true and store signal in "results"
     switch(pos){// What is the selected position within this menu?
       case 0:// Position is 0
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: menu = 4; break; case RIGHTIR: menu = 6; break; case DOWNIR: pos = 1; break;//Navigate   
         };break;
         case 1:// Position is 1
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 1; break; case RIGHTIR: pos = 2; break; case UPIR: pos = 0; break; case DOWNIR: pos = 2; break; case ENTERIR: runCalibration(); break;  //Run calibration to scale Pump A accurately
         }break;
       case 2:// Position is 2
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 2; break; case RIGHTIR: pos = 21; break; case UPIR: pos = 1; break; case DOWNIR: pos = 3; break;  //navigate
         }break;
       case 21:// Position is 21
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 2; break; case RIGHTIR: pos = 3; break; case UPIR: calibrationVolume=calibrationVolume+calibrationVolumeChangeMl; break; case DOWNIR: calibrationVolume=calibrationVolume-calibrationVolumeChangeMl; break;// Navigate or change calibration volume by calibrationVolumeChangeMl in mL
         }break;
      case 3:
-        switch (results.value){// What was the signal received from the IR remote?
-          case LEFTIR: pos = 21; break; case RIGHTIR: pos = 3; break; case UPIR: pos = 2; break; case DOWNIR: pos = 3; break; case ENTERIR: writeSampleParamArray(); break;// Navigate or write sample parameters to the SD card     
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
+          case LEFTIR: pos = 21; break; case RIGHTIR: pos = 3; break; case UPIR: pos = 2; break; case DOWNIR: pos = 3; break; case ENTERIR: writeSampleParamArray(); break;// Navigate or write sample parameters to the sd card     
         }break;
     }  
-    irrecv.resume();// Continue receiving looking for IR signals
+    IrReceiver.resume();// Continue receiving looking for IR signals
   }
 }
 void primeMenuNavigation(){
-  if(irrecv.decode(&results)){// If there is an IR signal, return true and store signal in "results"
+  if(IrReceiver.decode()){// If there is an IR signal, return true and store signal in "results"
     switch(pos){// What is the selected position within this menu?
       case 0:// Position is 0
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: menu = 5; break; case RIGHTIR: menu = 0; break; case DOWNIR: pos = 1; break;//Navigate   
         };break;
         case 1:// Position is 1
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 1; break; case RIGHTIR: pos = 1; break; case UPIR: pos = 0; break; case DOWNIR: pos = 2; break; case ENTERIR: runPump(); break;  //Run sample pump for 10 sec to pump fluid for cleaning/priming
         }break;
         case 2:// Position is 2
-        switch (results.value){// What was the signal received from the IR remote?
+        switch (IrReceiver.decodedIRData.decodedRawData){// What was the signal received from the IR remote?
           case LEFTIR: pos = 2; break; case RIGHTIR: pos = 2; break; case UPIR: pos = 1; break; case DOWNIR: pos = 0; break; case ENTERIR: runSyringe(); break;  //Run syringe pump for 10 sec to pump fluid for cleaning/priming
         }break;
     }  
-    irrecv.resume();// Continue receiving looking for IR signals
+    IrReceiver.resume();// Continue receiving looking for IR signals
   }
 }
 
@@ -537,7 +565,7 @@ void samplingMode(){
     aAlarmFlag = 2; 
   }
   if (aAlarmFlag == 2){
-    pumpAVolume = (pumpAEnc.read()/pumpAGearRatio*calibrationVolume/calibrationCount); //Equation for determining sample pump run time utilizing the calibration step and related encoder count   
+    pumpAVolume = abs(pumpAEnc.read()/pumpAGearRatio*calibrationVolume/calibrationCount); //Equation for determining sample pump run time utilizing the calibration step and related encoder count   
     if (pumpAVolume > sampleVolume){
       digitalWrite(pumpAPin, LOW);
       digitalWrite (syringePin, HIGH);
@@ -545,7 +573,7 @@ void samplingMode(){
     else {aAlarmFlag = 2;}
   }      
   if (aAlarmFlag ==3){
-    syringeVolume = (syringeEnc.read()/syringeGearRatio*calibrationVolume/calibrationCount); //Equation for determining syringe pump run time using the sample pump calibration
+    syringeVolume = abs(syringeEnc.read()/syringeGearRatio*calibrationVolume/calibrationCount); //Equation for determining syringe pump run time using the sample pump calibration
     if (syringeVolume > syringeDispenseVolume){
       digitalWrite(syringePin, LOW);
       digitalWrite(pumpAEncPowerPin, LOW);
@@ -587,7 +615,9 @@ void goToSleep(){
   alarm.setRtcTimer(hrToSleep, minToSleep, secToSleep);// Sets the RTC TIMER with the appropriate amount of hour, min, sec to sleep
   delay (100);
   int who; 
-  who = Snooze.hibernate( config_teensy35 );// wake up the Teensy and indentify who woke it up
+  who = Snooze.sleep( config_teensy40 ); //Sleep seems to be the only snooze library that works easily with 4.1 or maybe our code
+  //need to par down code and see deepsleep and hibernate still dont work.
+  //who = Snooze.hibernate( config_teensy40 );// wake up the Teensy and indentify who woke it up
   if (who == REED_INTERRUPT_PIN){
     delay(500);
     if (digitalRead(REED_INTERRUPT_PIN)==HIGH){
@@ -629,12 +659,24 @@ void initialAlarmFlag(){
 
 
 //<-------------------------------------------------------------------------------------------------------------------------------------------------------------->
-//<--------------------------------------------------------------------SD CARD CODE------------------------------------------------------------------------------>
+//<--------------------------------------------------------------------sd CARD CODE------------------------------------------------------------------------------>
 //<-------------------------------------------------------------------------------------------------------------------------------------------------------------->
+size_t readField(FsFile* sampleParam, char* str, size_t size, const char* delim) {
+  char ch;
+  size_t n = 0;
+  while ((n + 1) < size && sampleParam->read(&ch, 1) == 1) {
+    if (ch == '\r') {continue;}// Delete Carriage Return.
+    str[n++] = ch;
+    if (strchr(delim, ch)) {break;}
+  }
+  str[n] = '\0';
+  return n;
+}
+
 void readSampleParamArray(){
-  sampleParam = sd.open("SAMPLEPARAM.TXT", FILE_WRITE);// Open SAMPLEPARAM.txt file on sd card
+  sampleParam = SD.sdfs.open("SAMPLEPARAM.TXT", FILE_READ);// Open SAMPLEPARAM.txt file on sd card
   if (!sampleParam){Serial.println("open failed");}// If opening failed, write "open failed" to the serial port for debugging
-  sampleParam.rewind();// Rewind the file for read.
+  //sampleParam.rewind();// Rewind the file for read.
   // Array for data.
   int i = 0;// Index for array rows
   int j = 0;// Index for array columns
@@ -659,24 +701,13 @@ void readSampleParamArray(){
   sampleMode = sampleParamArray[0][0]; sampleVolume = sampleParamArray[0][1]; calibrationVolume = sampleParamArray[0][2]; calibrationCount = sampleParamArray[0][3]; aHr = sampleParamArray[0][4];aMin = sampleParamArray[0][5];aDay = sampleParamArray[0][6];aMon = sampleParamArray[0][7];aYr = sampleParamArray[0][8];// sampleMode, sampleVolume, calibrationVolume, calibrationCount, aHr, aMin, aDay, aMon, aYr 
 }
 
-size_t readField(File* sampleParam, char* str, size_t size, const char* delim) {
-  char ch;
-  size_t n = 0;
-  while ((n + 1) < size && sampleParam->read(&ch, 1) == 1) {
-    if (ch == '\r') {continue;}// Delete Carriage Return.
-    str[n++] = ch;
-    if (strchr(delim, ch)) {break;}
-  }
-  str[n] = '\0';
-  return n;
-}
 void writeSampleParamArray(){
-  sampleParam = sd.open("SAMPLEPARAM.TXT", FILE_WRITE);// Open the SAMPLEPARAM.TXT file on the SD card
+  sampleParam = SD.sdfs.open("SAMPLEPARAM.TXT", FILE_WRITE);// Open the SAMPLEPARAM.TXT file on the sd card
   if (!sampleParam) {Serial.println("open failed");}// If opening the file failed, write a open failed to serial debugging
   //CREATE SAMPLE PARAMETER STRINGS (one per line)
   String sampleParamString0 = String(sampleMode) +","+String(sampleVolume) +","+String(calibrationVolume) +","+String(calibrationCount) +","+ String(aHr) +","+String(aMin)+","+String(aDay)+","+String(aMon)+","+String(aYr)+"\r\n";// Create string of the second line of sample parameters
-  //WRITE STRINGS TO SD CARD
-  sampleParam.rewind(); delay(50);// Rewind to the beginning of the SAMPLEPARAM.txt file
+  //WRITE STRINGS TO sd CARD
+  //sampleParam.rewind(); delay(50);// Rewind to the beginning of the SAMPLEPARAM.txt file
   sampleParam.print(sampleParamString0); delay(50);// Overwrite the first line of the SAMPLEPARAM.txt file
   sampleParam.sync(); delay(500);// Sync the SAMPLEPARAM.txt file
 
@@ -689,7 +720,7 @@ void writeSampleParamArray(){
 
 void logData(){// Called to log  data
   getVoltage();// Read the current voltage
-  dataLog = sd.open("dataLog.TXT", FILE_WRITE);// Open dataLog.TXT file
+  dataLog = SD.sdfs.open("dataLog.TXT", FILE_WRITE);// Open dataLog.TXT file
   delay(100);
   if (!dataLog){Serial.println("open failed");}// If open dataLog.txt file doesn't open, write an error to the serial for debugging
   String dataLogString = String(nowHr) + ":" + String(nowMin) + ":" + String(nowSec) + "," + String(nowDay) + "/" + String(nowMon) + "/" + String(nowYr+2000) + "," + String(voltage);// Create a data logging string
@@ -699,13 +730,43 @@ void logData(){// Called to log  data
   delay(500);
 }
 
+void readFiles(){
+    // open the file for reading:
+  sampleParam = SD.sdfs.open("SAMPLEPARAM.txt");
+  if (sampleParam) {
+    Serial.println("sampleParam.txt:");
+    // read from the file until there's nothing else in it:
+    while (sampleParam.available()) {
+      Serial.write(sampleParam.read());
+    }
+    // close the file:
+    sampleParam.close();
+  } else {
+    // if the file didn't open, print an error:
+    Serial.println("error opening sampleParam.txt");
+  }
+ dataLog = SD.sdfs.open("DATALOG.txt");
+  if (dataLog) {
+    Serial.println("dataLog.txt:");
+    // read from the file until there's nothing else in it:
+    while (dataLog.available()) {
+      Serial.write(dataLog.read());
+    }
+    // close the file:
+    dataLog.close();
+  } else {
+    // if the file didn't open, print an error:
+    Serial.println("error opening dataLog.txt");
+  }
+}
 //<-------------------------------------------------------------------------------------------------------------------------------------------------------------->
 //<-------------------------------------------------------------------------OTHER CODE--------------------------------------------------------------------------->
 //<-------------------------------------------------------------------------------------------------------------------------------------------------------------->
 void getVoltage(){// Called when we need to know the voltage of the battery pack
-  int adcVoltage = adc->analogRead(voltageReadPin);// 
-  rawVoltage = adcVoltage*3.3/65536;// Raw voltage is equal to that read by the ADC times the max voltage, divided by the max ADC value (for 16-bit integer)
-  voltage = 3.930*rawVoltage;// Voltage divider. R1 = 390k ohms and R2 = 100k ohms. 3.930 is variable for resistance of whole system
+  int adcVoltage = adc->adc0->analogRead(voltageReadPin);// 
+  rawVoltage = adcVoltage*3.3/adc->adc0->getMaxValue();// Raw voltage is equal to that read by the ADC times the max voltage, divided by the max ADC value
+  voltage = 4.9*rawVoltage;// Voltage divider. R1 = 390k ohms and R2 = 100k ohms. 4.9 is variable for resistance of whole system
+  //the resistance variable used to be 3.9, maybe issue with resistors that it's 4.9 now, or just difference in the ADC library update
 }
 void numberCorrect(){
 //Settings correct
@@ -759,7 +820,7 @@ void runCalibration(){ //Calibration step uses encoder count and timed volume co
   calibrationCount = pumpAEnc.read()/pumpAGearRatio; //Measure the count of the encoder after 30 seconds of running pump
   digitalWrite(pumpAEncPowerPin, LOW); //turn off Pump A encoder pin
   digitalWrite(pumpAPin, LOW);  // turn off Pump A
-  writeSampleParamArray(); //Record the encoder count to SD card
+  writeSampleParamArray(); //Record the encoder count to sd card
 }
 
 void runPump(){
@@ -768,11 +829,11 @@ void runPump(){
   display.display();// Update the OLED display    
   delay(500);
   waitforit = 0;
-  irrecv.resume();// Continue receiving looking for IR signals
+  IrReceiver.resume();// Continue receiving looking for IR signals
   while (waitforit==0){
-    if(irrecv.decode(&results)){// If there is an IR signal, return true and store signal in "results"
-           if(results.value == ENTERIR){waitforit = 1; digitalWrite(pumpAPin, LOW);}
-       irrecv.resume();// Continue receiving looking for IR signals
+    if(IrReceiver.decode()){// If there is an IR signal, return true and store signal in "results"
+           if(IrReceiver.decodedIRData.decodedRawData == ENTERIR){waitforit = 1; digitalWrite(pumpAPin, LOW);}
+       IrReceiver.resume();// Continue receiving looking for IR signals
      } 
   }
 }
@@ -783,11 +844,11 @@ void runSyringe(){
   display.display();// Update the OLED display    
   delay(500);
   waitforit = 0;
-  irrecv.resume();// Continue receiving looking for IR signals
+  IrReceiver.resume();// Continue receiving looking for IR signals
   while (waitforit==0){
-    if(irrecv.decode(&results)){// If there is an IR signal, return true and store signal in "results"
-           if(results.value == ENTERIR){waitforit = 1; digitalWrite(syringePin, LOW);}
-       irrecv.resume();// Continue receiving looking for IR signals
+    if(IrReceiver.decode()){// If there is an IR signal, return true and store signal in "results"
+           if(IrReceiver.decodedIRData.decodedRawData == ENTERIR){waitforit = 1; digitalWrite(syringePin, LOW);}
+       IrReceiver.resume();// Continue receiving looking for IR signals
      } 
   }
 }
